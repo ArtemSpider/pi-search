@@ -142,17 +142,17 @@ impl Search {
 
                 let mut d: String = "".to_string();
                 if last_digits.is_some() {
-                    d.push_str(last_digits.unwrap().as_str());
+                    d.push_str(last_digits.as_ref().unwrap().as_str());
                 }
                 d.push_str(new_digits.as_str());
 
-                if pro_tx.send(digit + digits_per_request * 2).is_err() {
+                if pro_tx.send(digit + digits_per_request).is_err() {
                     panic!("Error while sending");
                 }
                 
                 let ind = d.find(search_for.as_str());
                 if ind.is_some() {
-                    let _ = res_tx.send(Some(digit + ind.unwrap()));
+                    let _ = res_tx.send(Some(digit + ind.unwrap() - last_digits.as_ref().unwrap_or(&"".to_string()).len()));
                     break;
                 }
                 last_digits = Some(new_digits);
