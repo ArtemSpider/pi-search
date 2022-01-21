@@ -24,7 +24,7 @@ struct PreloadInfo {
 
 impl PreloadInfo {
     fn new(_input_info: &InputInfo, search: &mut Search, preload_size: usize) -> Self {
-        let (loaded_size_rec, result_rec) = search.preload(preload_size);
+        let (loaded_size_rec, result_rec) = search.preload(preload_size, 10);
         Self {
             preload_size,
             loaded_size_rec,

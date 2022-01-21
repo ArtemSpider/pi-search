@@ -12,7 +12,7 @@ fn create_client() -> Client {
     Client::builder().danger_accept_invalid_certs(true).build().unwrap()
 }
 
-pub const MAX_DIGITS_PER_REQUEST: usize = 1000; 
+pub const MAX_DIGITS_PER_REQUEST: usize = 1000;
 
 pub struct Search {
     client: Arc<Mutex<Client>>,
@@ -75,9 +75,12 @@ impl Search {
         unwrap_am!(self.saved_digits).len()
     }
 
-    pub fn preload(&mut self, count: usize) -> (Receiver<usize>, Receiver<()>) {
+    pub fn preload(&mut self, count: usize, num_of_threads: usize) -> (Receiver<usize>, Receiver<()>) {
         if self.get_state() != SearchState::Idle {
             panic!("Can't preload: state must be idle");
+        }
+        if num_of_threads == 0 {
+            panic!("Can't preload: num_of_threads must be greater then 0");
         }
 
         let (loa_tx, loa_rx) = mpsc::channel();
@@ -88,22 +91,125 @@ impl Search {
         let digits_per_request = self.digits_per_request;
 
         self.preload_thread_handler = Some(thread::spawn(move || {
-            loop {
-                let len = unwrap_am!(c_digits).len();
+            let len = unwrap_am!(c_digits).len();
+            if len >= count {
+                let _ = res_tx.send(());
+                return;
+            }
+            let per_thread = (count - len) / num_of_threads;
 
-                if loa_tx.send(len).is_err() {
-                    eprintln!("Main thread is dead");
-                    break;
+            // use only 1 thread
+            if per_thread < digits_per_request {
+                println!("Using 1 thread");
+
+                loop {
+                    let len = unwrap_am!(c_digits).len();
+    
+                    if loa_tx.send(len).is_err() {
+                        eprintln!("Main thread is dead");
+                        break;
+                    }
+                    if len >= count {
+                        let _ = res_tx.send(());
+                        break;
+                    }
+    
+                    let request_digits = digits_per_request.min(count - len);
+                    let new_digits = get_digits(&c_client.lock().unwrap(), len, request_digits).unwrap();
+                    
+                    unwrap_am!(c_digits).push_str(new_digits.as_str());
                 }
-                if len >= count {
-                    let _ = res_tx.send(());
-                    break;
+            }
+            // use num_of_threads threads
+            else {
+                println!("Using {num_of_threads} threads");
+
+                let (tloa_tx, tloa_rx) = mpsc::channel();
+                let mut preload_threads_handlers = Vec::new();
+                let (res_txs, res_rxs) = mpsc::channel();
+    
+                let gstart = unwrap_am!(c_digits).len();
+                let gend = count;
+
+                for i in 0..num_of_threads {
+                    let tloa_tx = tloa_tx.clone();
+    
+                    let start = gstart + i * per_thread;
+                    let end;
+                    if i + 1 == num_of_threads {
+                        end = gend;
+                    }
+                    else {
+                        end = start + per_thread;
+                    }
+
+                    let c_client = c_client.clone();
+    
+                    let res_txs = res_txs.clone();
+                    preload_threads_handlers.push(thread::spawn(move || {
+                        let mut cur_loaded = start;
+                        let mut digits = String::default();
+                        loop {
+                            let request_digits = digits_per_request.min(end - cur_loaded);
+
+                            if request_digits == 0 {
+                                break;
+                            }
+
+                            digits.push_str(get_digits(&c_client.lock().unwrap(), cur_loaded, request_digits).unwrap().as_str());
+                            println!("Thread {i}, request ({cur_loaded}-{}) completed", cur_loaded + request_digits);
+                            cur_loaded += request_digits;
+
+                            if tloa_tx.send(request_digits).is_err() {
+                                panic!("Main preload thread is dead");
+                            }
+                        }
+                        if res_txs.send((i, digits)).is_err() {
+                            panic!("Main preload thread is dead");
+                        }
+                    }));
                 }
 
-                let request_digits = digits_per_request.min(count - len);
-                let new_digits = get_digits(&c_client.lock().unwrap(), len, request_digits).unwrap();
-                
-                unwrap_am!(c_digits).push_str(new_digits.as_str());
+                let mut result_strs = vec![String::default(); num_of_threads];
+                let mut loa_len = unwrap_am!(c_digits).len();
+
+                while result_strs.contains(&String::default()) {
+                    loop {
+                        let tloa_res = tloa_rx.try_recv();
+                        match tloa_res {
+                            Ok(add_len) => loa_len += add_len,
+                            Err(err) => {
+                                match err {
+                                    mpsc::TryRecvError::Empty => break,
+                                    mpsc::TryRecvError::Disconnected => {},
+                                }
+                            },
+                        }
+                    }
+                    
+                    loop {
+                        let res_res = res_rxs.try_recv();
+                        match res_res {
+                            Ok((ind, s)) => result_strs[ind] = s,
+                            Err(err) => {
+                                match err {
+                                    mpsc::TryRecvError::Empty => break,
+                                    mpsc::TryRecvError::Disconnected => {},
+                                }
+                            },
+                        }
+                    }
+
+                    if loa_tx.send(loa_len).is_err() {
+                        panic!("Main thread is dead");
+                    }
+                }
+
+                for rs in result_strs {
+                    unwrap_am!(c_digits).push_str(rs.as_str());
+                }
+
+                let _ = res_tx.send(());
             }
         }));
 
@@ -132,7 +238,7 @@ impl Search {
             }
             let mut digit = unwrap_am!(c_digits).len();
             if pro_tx.send(digit).is_err() {
-                panic!("Error while sending");
+                panic!("Main thread is dead");
             }
             
             let mut last_digits: Option<String> = None;
@@ -147,7 +253,7 @@ impl Search {
                 d.push_str(new_digits.as_str());
 
                 if pro_tx.send(digit + digits_per_request).is_err() {
-                    panic!("Error while sending");
+                    panic!("Main thread is dead");
                 }
                 
                 let ind = d.find(search_for.as_str());
