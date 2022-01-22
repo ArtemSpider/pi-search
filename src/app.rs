@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::{sync::mpsc::{Receiver, TryRecvError}, fs::File, io::{Read, Write}};
 
 use eframe::{egui::{self, Ui}, epi};
 
@@ -75,7 +75,8 @@ enum AppState {
 
 pub struct TemplateApp {
     state: AppState,
-    preload: String,
+    preload_size: String,
+    load_size: String,
     search_for: String,
     search: Search,
 }
@@ -84,7 +85,8 @@ impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             state: AppState::Input(InputInfo::new()),
-            preload: Default::default(),
+            preload_size: Default::default(),
+            load_size: Default::default(),
             search_for: Default::default(),
             search: Search::new(),
         }
@@ -92,17 +94,55 @@ impl Default for TemplateApp {
 }
 
 impl TemplateApp {
+    fn show_files_control(&mut self, ui: &mut Ui) {
+        if ui.button("Read all")
+             .on_hover_text("Read all digits stored in pi.txt")
+             .clicked()
+        {
+            if self.load_digits().is_err() {
+                eprintln!("Error while loading digits");
+            }
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("Read")
+                 .on_hover_text("Read digits stored in pi.txt")
+                 .clicked()
+            {
+                if self.load_size.len() > 0 && self.load_size.chars().all(char::is_numeric) {
+                    if self.load_n_digits(self.load_size.parse().unwrap()).is_err() {
+                        eprintln!("Error while loading digits");
+                    }
+                }
+            }
+            ui.text_edit_singleline(&mut self.load_size);
+        });
+
+        if ui.button("Write loaded")
+             .on_hover_text("Write all loaded digits to pi.txt")
+             .clicked()
+        {
+            if self.save_digits().is_err() {
+                eprintln!("Error while saving digits");
+            }
+        }
+        
+        ui.add_space(10f32);
+    }
+
     fn input_state(&mut self, ui: &mut Ui) {
+        self.show_files_control(ui);
+
         if let AppState::Input(info) = &mut self.state {
             ui.label(format!("Digits loaded: {}", self.search.digits_loaded()));
 
             let mut new_state = None;
             egui::Grid::new("input_grid").max_col_width(120f32).show(ui, |ui| {
                 ui.label("Preload: ");
-                ui.add_enabled(true, egui::TextEdit::singleline(&mut self.preload));
+                ui.add_enabled(true, egui::TextEdit::singleline(&mut self.preload_size));
                 if ui.button("Preload").clicked() {
-                    if self.preload.len() > 0 && self.preload.chars().all(char::is_numeric) {
-                        new_state = Some(AppState::Preload(PreloadInfo::new(&info, &mut self.search, self.preload.parse().unwrap())));
+                    if self.preload_size.len() > 0 && self.preload_size.chars().all(char::is_numeric) {
+                        new_state = Some(AppState::Preload(PreloadInfo::new(&info, &mut self.search, self.preload_size.parse().unwrap())));
                     }
                 }
                 ui.end_row();
@@ -124,6 +164,8 @@ impl TemplateApp {
     }
 
     fn preload_state(&mut self, ui: &mut Ui) {
+        self.show_files_control(ui);
+        
         if let AppState::Preload(info) = &mut self.state {
             ui.label("Preloading...");
             
@@ -154,6 +196,8 @@ impl TemplateApp {
     }
 
     fn search_state(&mut self, ui: &mut Ui) {
+        self.show_files_control(ui);
+        
         if let AppState::Search(info) = &mut self.state {
             ui.horizontal(|ui| {
                 ui.label("Search for: ");
@@ -209,6 +253,57 @@ impl TemplateApp {
                 self.state = AppState::Input(InputInfo::new());
             }
         }
+    }
+
+    fn load_digits(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut pi_file = File::open("pi.txt")?;
+        let digits = self.search.get_digits();
+
+        let file_size = pi_file.metadata()?.len() as usize;
+        let digits_size = digits.lock().unwrap().len();
+
+        if file_size > digits_size {
+            let mut file_digits = String::default();
+            pi_file.read_to_string(&mut file_digits)?;
+
+            digits.lock().unwrap().clear();
+            digits.lock().unwrap().push_str(file_digits.as_str());
+        }
+
+        Ok(())
+    }
+
+    fn load_n_digits(&mut self, count: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let mut pi_file = File::open("pi.txt")?;
+        let digits = self.search.get_digits();
+
+        let load_size = count.min(pi_file.metadata()?.len() as usize);
+        let digits_size = digits.lock().unwrap().len();
+
+        if load_size > digits_size {
+            let mut buf = vec![0u8; load_size];
+            pi_file.read_exact(&mut buf)?;
+            let file_digits = String::from_utf8(buf)?;
+
+            digits.lock().unwrap().clear();
+            digits.lock().unwrap().push_str(file_digits.as_str());
+        }
+
+        Ok(())
+    }
+
+    fn save_digits(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut pi_file = File::create("pi.txt")?;
+        let digits = self.search.get_digits();
+
+        let file_size = pi_file.metadata()?.len() as usize;
+        let digits_size = digits.lock().unwrap().len();
+
+        if file_size < digits_size {
+            pi_file.write_all(&digits.lock().unwrap().as_bytes()[file_size..])?;
+        }
+
+        Ok(())
     }
 }
 

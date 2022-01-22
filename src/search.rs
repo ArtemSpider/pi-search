@@ -71,6 +71,9 @@ impl Search {
         }
     }
 
+    pub fn get_digits(&self) -> Arc<Mutex<String>> {
+        self.saved_digits.clone()
+    }
     pub fn digits_loaded(&self) -> usize {
         unwrap_am!(self.saved_digits).len()
     }
@@ -157,7 +160,7 @@ impl Search {
                             }
 
                             digits.push_str(get_digits(&c_client.lock().unwrap(), cur_loaded, request_digits).unwrap().as_str());
-                            println!("Thread {i}, request ({cur_loaded}-{}) completed", cur_loaded + request_digits);
+                            //println!("Thread {i}, request ({cur_loaded}-{}) completed", cur_loaded + request_digits);
                             cur_loaded += request_digits;
 
                             if tloa_tx.send(request_digits).is_err() {
